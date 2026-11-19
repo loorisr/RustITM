@@ -176,6 +176,14 @@ The UI fetches coverage in the `f32` format and reprojects it row by row to Web 
 
 To publish: push the repository to GitHub, then `git tag v0.2.0 && git push --tags`. The GHCR package is private by default; make it public in its *Package settings* if needed.
 
+## How the terrain profile is built (interpolation)
+
+- **Elevation of a point** (`/v1/elevation`, profiles): **bilinear interpolation** between the 4 nearest GLO-90 pixel centres, also across tile edges. The error is a few metres on steep slopes (see `crates/server/tests/dem.rs`).
+- **Point-to-point profile** (`/v1/p2p`): samples along the great circle (sphere, R = 6371 km) at a constant step `d / n` with `n = ceil(d / PROFILE_STEP_M)`, so at most 92.66 m (3″), whatever the bearing. Both ends are exactly the TX and RX points.
+- **Coverage map** (`/v1/coverage`): one radial profile per azimuth, at a 92.66 m step from the TX, interpolated as above. With `interp: "nearest"` (default), each pixel takes the ITM result at the nearest (radial, step) point, which is less than half a step from the pixel centre in distance and less than half the radial spacing across. With `interp: "bilinear"`, the losses (not the elevations) of the 4 surrounding (radial, step) points are interpolated.
+
+Signal-Server reads the same DEM differently: **nearest pixel**, no interpolation, and one sample per pixel crossed, so a step of about 65 to 93 m depending on the bearing. On 40 random links in the Alps (145 MHz, the same NTIA ITM v1.3 in both tools: Signal-Server `-pm 13`), the ground elevation at the same RX point differs by about 14 m on average and up to about 55 m, and the path loss differs by 2.8 dB on average (72 % within 3 dB, up to about 13 dB on paths with two horizons). On a 100 km coverage map the median difference is −0.3 dB, but only about 65 % of pixels are within 3 dB. Neither is more correct: ITM is very sensitive to a few metres at the top of an obstacle, and these are two ways of reading a 90 m DEM.
+
 ## Things to know
 
 - **GLO-90 is a surface model (DSM)**: it includes buildings and tree canopy. In towns or forests, a receive antenna "on the ground" is actually sitting on the rooftops or treetops. Antenna heights are relative to that surface.
