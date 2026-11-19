@@ -263,10 +263,11 @@ fn compute_nearest(
             let elev = radial_profile(tiles, spec.tx, brg, step, k_max);
             let mut out = vec![f32::NAN; k_max + 1];
             let (mut calls, mut errors) = (0u64, 0u64);
+            let mut hint = itm::DeltaHHint::default();
             for k in 2..=k_max {
                 if need[k] {
                     calls += 1;
-                    match itm::p2p(&spec.params, &elev[..=k], step) {
+                    match itm::p2p_hinted(&spec.params, &elev[..=k], step, &mut hint) {
                         Ok(r) => out[k] = r.loss_db as f32,
                         Err(_) => errors += 1,
                     }
@@ -309,8 +310,9 @@ fn compute_bilinear(
             let elev = radial_profile(tiles, spec.tx, brg, step, n_steps);
             let mut out = vec![f32::NAN; n_steps + 1];
             let mut errors = 0u64;
+            let mut hint = itm::DeltaHHint::default();
             for k in 2..=n_steps {
-                match itm::p2p(&spec.params, &elev[..=k], step) {
+                match itm::p2p_hinted(&spec.params, &elev[..=k], step, &mut hint) {
                     Ok(r) => out[k] = r.loss_db as f32,
                     Err(_) => errors += 1,
                 }

@@ -146,7 +146,7 @@ Response headers give `x-bounds` (`west,south,east,north`, ready for a Leaflet `
 
 Compared with a direct `/v1/p2p` call to the pixel centre (400 random pixels, Alps, 100 km, 145 MHz), the mean absolute difference is 1.0 dB with `nearest` and 0.8 dB with `bilinear`; about 92–94 % of pixels are within 3 dB. The differences come from the profile: the coverage uses a radial that passes within half a pixel of the centre, not the exact path to it, and ITM is sensitive to that near shadow edges.
 
-**Measured performance** (20 threads, real GLO-90 tiles): at 45.5° N on the native grid, a 100 km radius gives a 3081 × 2161 px grid (5.2 M pixels in the disk). `nearest` makes 4.5 M ITM calls in 0.82 s; `bilinear` makes 7.8 M in 1.2 s. On one thread: 13.7 s and 20.3 s, about 3 µs per ITM call. The work is parallelised per radial with rayon, so time scales roughly with the number of cores.
+**Measured performance** (20 threads, real GLO-90 tiles): at 45.5° N on the native grid, a 100 km radius gives a 3081 × 2161 px grid (5.2 M pixels in the disk). `nearest` makes 4.5 M ITM calls in 0.75 s; `bilinear` makes 7.8 M in 1.07 s (Intel Core Ultra 7 265K, 8 P + 12 E cores). On one thread: 12.2 s and 17.8 s, about 2.3–2.7 µs per ITM call. Along each radial, the terrain irregularity Δh is computed with a hint carried from one distance to the next (the 10 % / 90 % quantiles move little between neighbouring points); results are bit-identical to the reference algorithm. The work is parallelised per radial with rayon, so time scales roughly with the number of cores.
 
 ### Elevation
 

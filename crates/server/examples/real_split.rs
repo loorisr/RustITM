@@ -82,6 +82,15 @@ fn main() -> anyhow::Result<()> {
         acc += itm::p2p(&p, black_box(&z[..=k]), step).map_or(0.0, |r| r.loss_db)
     });
     println!("  (checksum {acc:.6})");
+    let mut acc = 0.0;
+    let mut hint = itm::DeltaHHint::default();
+    run("p2p_hinted", &mut |z, k| {
+        if k == 2 {
+            hint = itm::DeltaHHint::default();
+        }
+        acc += itm::p2p_hinted(&p, black_box(&z[..=k]), step, &mut hint).map_or(0.0, |r| r.loss_db)
+    });
+    println!("  (checksum {acc:.6})");
     run("find_horizons", &mut |z, k| {
         black_box(itm::core::find_horizons(
             black_box(&z[..=k]),
@@ -97,6 +106,20 @@ fn main() -> anyhow::Result<()> {
             step,
             (15.0 * h[0]).min(0.1 * d),
             d - (15.0 * h[1]).min(0.1 * d),
+        ));
+    });
+    let mut hint = itm::DeltaHHint::default();
+    run("delta_h (indice)", &mut |z, k| {
+        if k == 2 {
+            hint = itm::DeltaHHint::default();
+        }
+        let d = k as f64 * step;
+        black_box(itm::core::compute_delta_h_hinted(
+            black_box(&z[..=k]),
+            step,
+            (15.0 * h[0]).min(0.1 * d),
+            d - (15.0 * h[1]).min(0.1 * d),
+            Some(&mut hint),
         ));
     });
     run("quick_pfl (total)", &mut |z, k| {

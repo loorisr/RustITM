@@ -116,6 +116,44 @@ pub fn linear_least_squares_fit(z: &[f64], xi: f64, d_start: f64, d_end: f64) ->
 
 /// Paramètre d'irrégularité du terrain Δh (`ComputeDeltaH`).
 pub fn compute_delta_h(z: &[f64], xi: f64, d_start: f64, d_end: f64) -> f64 {
+    compute_delta_h_hinted(z, xi, d_start, d_end, None)
+}
+
+/// Indice de sélection des quantiles de Δh, réutilisé d'un appel au suivant le long d'une
+/// même radiale (distances croissantes, comme dans une carte de couverture).
+///
+/// Les quantiles 10 % et 90 % du profil redressé varient peu d'un point au suivant : la
+/// sélection exacte se fait alors parmi les quelques valeurs proches des quantiles
+/// précédents, au lieu de deux sélections complètes. Le résultat est toujours identique au
+/// calcul sans indice (profils sans NaN) ; seule la vitesse en dépend. Un indice périmé (autre
+/// radiale) reste correct, il est juste moins efficace au premier appel.
+#[derive(Debug, Clone)]
+pub struct DeltaHHint {
+    prev: Option<(f64, f64)>,
+    /// Demi-largeur des bandes, relative à l'écart entre les deux quantiles
+    width: f64,
+}
+
+impl Default for DeltaHHint {
+    fn default() -> Self {
+        Self {
+            prev: None,
+            width: 0.02,
+        }
+    }
+}
+
+/// Taille maximale d'une bande pour le chemin rapide.
+const BAND_MAX: usize = 48;
+
+/// Comme [`compute_delta_h`], avec un indice facultatif pour accélérer la sélection.
+pub fn compute_delta_h_hinted(
+    z: &[f64],
+    xi: f64,
+    d_start: f64,
+    d_end: f64,
+    hint: Option<&mut DeltaHHint>,
+) -> f64 {
     let np = (z.len() - 1) as i64;
     let mut x_start = d_start / xi;
     let mut x_end = d_end / xi;
@@ -149,11 +187,72 @@ pub fn compute_delta_h(z: &[f64], xi: f64, d_start: f64, d_end: f64) -> f64 {
         *v -= fit_y1;
         fit_y1 += step;
     }
-    // Équivalent de std::nth_element(..., std::greater) : sélection en O(n), même résultat que la référence.
-    let desc = |a: &f64, b: &f64| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal);
-    let q10 = *s.select_nth_unstable_by((p10 - 1) as usize, desc).1;
-    let q90 = *s.select_nth_unstable_by(p90 as usize, desc).1;
+    let (ra, rb) = ((p10 - 1) as usize, p90 as usize);
+    let (q10, q90) = match hint {
+        Some(h) => two_quantiles_hinted(s, ra, rb, h),
+        None => two_quantiles_desc(s, ra, rb),
+    };
     (q10 - q90) / (1.0 - 0.8 * (-(d_end - d_start) / 50e3).exp())
+}
+
+fn desc(a: &f64, b: &f64) -> std::cmp::Ordering {
+    b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal)
+}
+
+/// Valeurs de rangs `ra` et `rb` dans l'ordre décroissant : équivalent de deux
+/// `std::nth_element(..., std::greater)`, même résultat que la référence.
+fn two_quantiles_desc(s: &mut [f64], ra: usize, rb: usize) -> (f64, f64) {
+    let qa = *s.select_nth_unstable_by(ra, desc).1;
+    let qb = *s.select_nth_unstable_by(rb, desc).1;
+    (qa, qb)
+}
+
+/// Comme [`two_quantiles_desc`], en cherchant d'abord chaque valeur dans une bande autour du
+/// quantile précédent. Si `above` valeurs sont au-dessus de la bande et que le rang cherché
+/// tombe dans la bande, la valeur de rang r est celle de rang r - above parmi les valeurs de
+/// la bande : le résultat est exact quelle que soit la largeur de bande.
+fn two_quantiles_hinted(s: &mut [f64], ra: usize, rb: usize, hint: &mut DeltaHHint) -> (f64, f64) {
+    if let Some((pa, pb)) = hint.prev {
+        let w = hint.width * (pa - pb).abs() + 1e-6;
+        let (lo_a, hi_a, lo_b, hi_b) = (pa - w, pa + w, pb - w, pb + w);
+        // Un seul passage : comptage au-dessus / dans chaque bande, et compaction sans branche
+        // des valeurs de bande (au-delà de BAND_MAX, le dernier emplacement est réécrit ; le
+        // chemin rapide est alors abandonné).
+        let mut band_a = [0.0f64; BAND_MAX + 1];
+        let mut band_b = [0.0f64; BAND_MAX + 1];
+        let (mut above_a, mut in_a, mut above_b, mut in_b) = (0usize, 0usize, 0usize, 0usize);
+        for &v in s.iter() {
+            above_a += (v > hi_a) as usize;
+            band_a[in_a.min(BAND_MAX)] = v;
+            in_a += (v >= lo_a && v <= hi_a) as usize;
+            above_b += (v > hi_b) as usize;
+            band_b[in_b.min(BAND_MAX)] = v;
+            in_b += (v >= lo_b && v <= hi_b) as usize;
+        }
+        // Rang hors bande : bande trop étroite ; bande trop pleine : trop large.
+        let narrow = |above: usize, inside: usize, r: usize| r < above || r >= above + inside;
+        let (narrow_a, narrow_b) = (narrow(above_a, in_a, ra), narrow(above_b, in_b, rb));
+        let full = in_a > BAND_MAX || in_b > BAND_MAX;
+        if !narrow_a && !narrow_b && !full {
+            let (na, nb) = (in_a, in_b);
+            let qa = *band_a[..na].select_nth_unstable_by(ra - above_a, desc).1;
+            let qb = *band_b[..nb].select_nth_unstable_by(rb - above_b, desc).1;
+            // Viser quelques valeurs par bande.
+            if in_a.max(in_b) > 12 {
+                hint.width *= 0.8;
+            }
+            hint.prev = Some((qa, qb));
+            return (qa, qb);
+        }
+        if full {
+            hint.width *= 0.5;
+        } else {
+            hint.width = (hint.width * 2.0).min(0.5);
+        }
+    }
+    let q = two_quantiles_desc(s, ra, rb);
+    hint.prev = Some(q);
+    q
 }
 
 /// Horizons radio des terminaux (`FindHorizons`).
@@ -199,6 +298,17 @@ pub fn find_horizons(z: &[f64], xi: f64, a_e: f64, h: [f64; 2]) -> ([f64; 2], [f
 
 /// Extraction des paramètres du profil (`QuickPfl`).
 pub fn quick_pfl(z: &[f64], xi: f64, gamma_e: f64, h: [f64; 2]) -> QuickPflOut {
+    quick_pfl_hinted(z, xi, gamma_e, h, None)
+}
+
+/// Comme [`quick_pfl`], avec un indice facultatif pour le calcul de Δh.
+pub fn quick_pfl_hinted(
+    z: &[f64],
+    xi: f64,
+    gamma_e: f64,
+    h: [f64; 2],
+    hint: Option<&mut DeltaHHint>,
+) -> QuickPflOut {
     let np = z.len() - 1;
     let d = np as f64 * xi;
     let a_e = 1.0 / gamma_e;
@@ -206,7 +316,7 @@ pub fn quick_pfl(z: &[f64], xi: f64, gamma_e: f64, h: [f64; 2]) -> QuickPflOut {
     let terrain_d_hzn_m = d_hzn;
     let d_start = (15.0 * h[0]).min(0.1 * d_hzn[0]);
     let d_end = d - (15.0 * h[1]).min(0.1 * d_hzn[1]);
-    let delta_h = compute_delta_h(z, xi, d_start, d_end);
+    let delta_h = compute_delta_h_hinted(z, xi, d_start, d_end, hint);
     let mut h_e = [0.0; 2];
 
     if d_hzn[0] + d_hzn[1] > 1.5 * d {
@@ -685,12 +795,48 @@ mod tests {
         (state.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 11) as f64 / (1u64 << 53) as f64
     }
 
-    #[test]
-    fn find_horizons_matches_reference_bit_for_bit() {
-        let a_e = 1.0 / (157e-9 * (1.0 - 0.04665 * (301.0f64 / 179.3).exp()));
+    /// `ComputeDeltaH` d'origine (deux sélections complètes, rééchantillonnage pas à pas).
+    fn compute_delta_h_ref(z: &[f64], xi: f64, d_start: f64, d_end: f64) -> f64 {
+        let np = (z.len() - 1) as i64;
+        let mut x_start = d_start / xi;
+        let mut x_end = d_end / xi;
+        if x_end - x_start < 2.0 {
+            return 0.0;
+        }
+        let p10 = ((0.1 * (x_end - x_start + 8.0)) as i64).clamp(4, 25);
+        let n = 10 * p10 - 5;
+        let p90 = n - p10;
+        let np_s = (n - 1) as f64;
+        x_end = (x_end - x_start) / np_s;
+        let mut i = x_start as i64;
+        x_start -= (i + 1) as f64;
+        let mut s = vec![0.0f64; n as usize];
+        for v in s.iter_mut() {
+            while x_start > 0.0 && (i + 1) < np {
+                x_start -= 1.0;
+                i += 1;
+            }
+            let a = z[(i + 1) as usize];
+            let b = z[i as usize];
+            *v = a + (a - b) * x_start;
+            x_start += x_end;
+        }
+        let (mut fit_y1, fit_y2) = linear_least_squares_fit(&s, 1.0, 0.0, np_s);
+        let step = (fit_y2 - fit_y1) / np_s;
+        for v in s.iter_mut() {
+            *v -= fit_y1;
+            fit_y1 += step;
+        }
+        let desc = |a: &f64, b: &f64| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal);
+        let q10 = *s.select_nth_unstable_by((p10 - 1) as usize, desc).1;
+        let q90 = *s.select_nth_unstable_by(p90 as usize, desc).1;
+        (q10 - q90) / (1.0 - 0.8 * (-(d_end - d_start) / 50e3).exp())
+    }
+
+    fn test_profiles(n: usize) -> Vec<Vec<f64>> {
         let mut s = 0x9e37_79b9_7f4a_7c15u64;
-        let n = 1200;
-        let profiles: Vec<Vec<f64>> = vec![
+        let mut walk = 500.0;
+        vec![
             // relief montagneux
             (0..=n)
                 .map(|i| {
@@ -704,7 +850,56 @@ mod tests {
             (0..=n).map(|i| ((i / 37) % 5) as f64 * 50.0).collect(),
             // bruit aléatoire
             (0..=n).map(|_| 2000.0 * rng(&mut s)).collect(),
-        ];
+            // marche aléatoire (relief réaliste)
+            (0..=n)
+                .map(|_| {
+                    walk += 40.0 * (rng(&mut s) - 0.5);
+                    walk
+                })
+                .collect(),
+        ]
+    }
+
+    #[test]
+    fn delta_h_hinted_matches_reference_bit_for_bit() {
+        let n = 1200;
+        let profiles = test_profiles(n);
+        // Indice partagé entre profils et pas : un indice périmé doit rester exact.
+        let mut shared = DeltaHHint::default();
+        for z in &profiles {
+            for xi in [30.0, 92.662_566_861_277_44, 250.0] {
+                let mut hint = DeltaHHint::default();
+                for k in 2..=n {
+                    let d = k as f64 * xi;
+                    let (d0, d1) = (
+                        (15.0 * 30.0f64).min(0.1 * d),
+                        d - (15.0 * 2.0f64).min(0.1 * d),
+                    );
+                    let want = compute_delta_h_ref(&z[..=k], xi, d0, d1);
+                    let plain = compute_delta_h(&z[..=k], xi, d0, d1);
+                    let hinted = compute_delta_h_hinted(&z[..=k], xi, d0, d1, Some(&mut hint));
+                    let stale = compute_delta_h_hinted(&z[..=k], xi, d0, d1, Some(&mut shared));
+                    for (name, got) in [
+                        ("sans indice", plain),
+                        ("indice", hinted),
+                        ("indice périmé", stale),
+                    ] {
+                        assert_eq!(
+                            got.to_bits(),
+                            want.to_bits(),
+                            "{name} k={k} xi={xi}: {got} vs {want}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn find_horizons_matches_reference_bit_for_bit() {
+        let a_e = 1.0 / (157e-9 * (1.0 - 0.04665 * (301.0f64 / 179.3).exp()));
+        let n = 1200;
+        let profiles = test_profiles(n);
         for z in &profiles {
             for xi in [30.0, 92.662_566_861_277_44, 250.0] {
                 for h in [[30.0, 2.0], [1.0, 1.0], [500.0, 10.0]] {

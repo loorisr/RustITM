@@ -16,7 +16,7 @@ mod variability;
 
 use complex::Complex;
 
-pub use crate::core::{PathGeometry, PropMode};
+pub use crate::core::{DeltaHHint, PathGeometry, PropMode};
 
 /// Climat radio (TN101).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -332,6 +332,27 @@ pub fn validate(p: &P2pParams, w: &mut Warnings) -> Result<(), ItmError> {
 /// `elevations` : altitudes du terrain (m) régulièrement espacées de `spacing_m`, de l'émetteur
 /// (index 0) au récepteur (dernier index). Au moins 2 points.
 pub fn p2p(p: &P2pParams, elevations: &[f64], spacing_m: f64) -> Result<P2pResult, ItmError> {
+    p2p_impl(p, elevations, spacing_m, None)
+}
+
+/// Comme [`p2p`], pour une suite d'appels le long d'une même radiale (distances croissantes) :
+/// `hint` garde d'un appel à l'autre de quoi accélérer le calcul de Δh. Le résultat est
+/// identique à [`p2p`]. Utiliser un indice par radiale (par thread).
+pub fn p2p_hinted(
+    p: &P2pParams,
+    elevations: &[f64],
+    spacing_m: f64,
+    hint: &mut DeltaHHint,
+) -> Result<P2pResult, ItmError> {
+    p2p_impl(p, elevations, spacing_m, Some(hint))
+}
+
+fn p2p_impl(
+    p: &P2pParams,
+    elevations: &[f64],
+    spacing_m: f64,
+    hint: Option<&mut DeltaHHint>,
+) -> Result<P2pResult, ItmError> {
     let mut w = Warnings::default();
     validate(p, &mut w)?;
     if elevations.len() < 2 || spacing_m.is_nan() || spacing_m <= 0.0 {
@@ -358,7 +379,7 @@ pub fn p2p(p: &P2pParams, elevations: &[f64], spacing_m: f64) -> Result<P2pResul
     }
 
     let h = [p.h_tx_m, p.h_rx_m];
-    let qp = core::quick_pfl(elevations, spacing_m, gamma_e, h);
+    let qp = core::quick_pfl_hinted(elevations, spacing_m, gamma_e, h, hint);
 
     let (a_ref, mode) = core::longley_rice(
         qp.theta_hzn,
