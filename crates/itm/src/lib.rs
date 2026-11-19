@@ -8,7 +8,10 @@
 //! (voir `tests/ntia.rs`).
 
 mod complex;
-mod core;
+/// Fonctions internes du modèle, exposées pour les micro-benchmarks (`examples/split.rs`).
+/// Pas une API stable.
+#[doc(hidden)]
+pub mod core;
 mod variability;
 
 use complex::Complex;
