@@ -77,6 +77,66 @@ Reading:
 Signal-Server also vectorises the loss computation (`lrprop`) over batches of 8 pixels
 (AVX2 + libmvec). This port does not.
 
+## Comparison with Signal-Server
+
+[Signal-Server](https://github.com/loorisr/Signal-Server) (commit `06e2d44`) against
+itm-api (commit `f4b4225`), on the same GLO-90 tiles and the same machine (Intel Core Ultra 7
+265K, 8 P + 12 E cores). The transmitter is at 46.0° N 6.0° E (Alps, Mont Blanc, Lake Geneva):
+the tiles cover the whole 100 km disc, so no part of it is treated as sea. 145 MHz, 30 m mast,
+receiver 2 m, radius 100 km. Best of 5 runs (Signal-Server) or 3 requests (itm-api).
+
+Signal-Server's `-fast` only works with its own ITM (`-pm 1`). Its NTIA ITM v1.3 (`-pm 13`),
+the model itm-api uses, has no fast mode.
+
+| Tool, mode | ITM | 20 threads | 1 thread |
+|---|---|---:|---:|
+| Signal-Server `-pm 1` | Signal-Server's ITM | 0.69 s | 9.39 s |
+| Signal-Server `-pm 1 -fast 50` | Signal-Server's ITM | **0.26 s** | **2.36 s** |
+| Signal-Server `-pm 13` | NTIA v1.3 | 1.32 s | 21.23 s |
+| itm-api, exact | NTIA v1.3 | 0.79 s | 12.40 s |
+| itm-api, `fast: 50` | NTIA v1.3 | 0.33 s | 4.38 s |
+
+- Signal-Server: wall time of the whole process (`-dbm -rt -120`, DEM read from `-demcache`,
+  image written), `-number_threads 20` or `1`.
+- itm-api: time of the HTTP request (`curl`), `format: f32`, `interp: nearest`, with
+  `RAYON_NUM_THREADS=20` or `1`. Tiles are local. Once they are in memory, a request takes
+  0.02–0.05 s less than the first one. The computation alone (`examples/fast_compare.rs`)
+  takes 0.75 s / 12.34 s exact and 0.29 s / 4.33 s with `fast 50`. `format: png` adds about
+  0.3 s.
+- Both compute a similar amount: 5.13 M pixels in the Signal-Server disc, 4.49 M ITM calls
+  for itm-api (3109 × 2161 px grid).
+
+Accuracy of each fast mode against the same tool's exact mode, on this map:
+
+| | Mean error | ≤1 dB | ≤3 dB | >6 dB | Max | Contour −120 dBm |
+|---|---:|---:|---:|---:|---:|---:|
+| Signal-Server `-fast 50` | 0.12 dB | 99.51 % | 99.93 % | 0.012 % | 21 dB | 0.18 % |
+| itm-api `fast: 50` | 0.13 dB | 98.79 % | 99.88 % | 0.012 % | 10.4 dB | 0.18 % |
+
+Signal-Server stores whole dBm, which hides part of the small errors in the ≤1 dB column.
+
+Reading:
+
+- With the same model (NTIA v1.3), itm-api is 1.7× faster than Signal-Server in exact mode
+  (1.32 s → 0.79 s on 20 threads, 21.2 s → 12.4 s on one), and 4.8× faster with `fast: 50`
+  (21.2 s → 4.4 s on one thread).
+- Against Signal-Server's own ITM (`-pm 1`), Signal-Server is faster: 1.15× in exact mode and
+  1.3× (20 threads) to 1.9× (one thread) in fast mode. Its `-pm 1` fast path computes the loss
+  (`lrprop`) on 8 pixels at a time (AVX2 + libmvec); itm-api does not, and at N = 50 that loss
+  computation is most of what remains (about 1 µs per call).
+- Both fast modes lose about the same accuracy: 0.12–0.13 dB on average, 0.18 % of pixels on
+  the other side of the −120 dBm contour.
+- The two tools do not give the same map, fast or not: they read the DEM differently (see the
+  README, "How the terrain profile is built").
+
+To reproduce the Signal-Server side:
+
+```bash
+signalserver -dem /path/to/glo90 -demcache /tmp/demcache -lat 46.0 -lon 6.0 -txh 30 -rxh 2 \
+  -f 145 -erp 96.6 -dbm -rt -120 -R 100 -pm 1 -fast 50 -number_threads 20 -o /tmp/map
+SS_RAW_DUMP=/tmp/map.raw signalserver ...   # int32 grid, to compare two runs pixel by pixel
+```
+
 ## Reproduce
 
 ```bash

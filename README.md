@@ -160,7 +160,7 @@ Compared with a direct `/v1/p2p` call to the pixel centre (400 random pixels, Al
 
 **Measured performance** (20 threads, real GLO-90 tiles): at 45.5° N on the native grid, a 100 km radius gives a 3081 × 2161 px grid (5.2 M pixels in the disk). `nearest` makes 4.5 M ITM calls in 0.75 s; `bilinear` makes 7.8 M in 1.07 s (Intel Core Ultra 7 265K, 8 P + 12 E cores). On one thread: 12.2 s and 17.8 s, about 2.3–2.7 µs per ITM call. Along each radial, the terrain irregularity Δh is computed with a hint carried from one distance to the next (the 10 % / 90 % quantiles move little between neighbouring points); results are bit-identical to the reference algorithm. The work is parallelised per radial with rayon, so time scales roughly with the number of cores.
 
-With `fast: true` (N = 50) the same `nearest` map takes 0.31 s on 20 threads and 4.3 s on one thread (2.85× faster than exact), with 99.72 % of pixels within 3 dB of the exact result.
+With `fast: true` (N = 50) the same `nearest` map takes 0.31 s on 20 threads and 4.3 s on one thread (2.85× faster than exact), with 99.72 % of pixels within 3 dB of the exact result. Compared with Signal-Server on the same tiles: with the same NTIA ITM v1.3, itm-api is 1.7× faster in exact mode and 4.8× faster with `fast` (one thread); Signal-Server's own fast ITM (`-pm 1 -fast 50`) is still 1.3–1.9× faster. See [docs/FAST_MODE.md](docs/FAST_MODE.md#comparison-with-signal-server).
 
 ### Elevation
 
