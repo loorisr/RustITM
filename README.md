@@ -3,7 +3,14 @@
 > **⚠️ 100% vibe coded by Claude Opus 5.5, for testing.**
 > Every line of this project (code, tests, web UI, Docker and CI setup, this README) was written by Claude Opus 5.5, an AI model, as an experiment. No human wrote or reviewed it. Treat it as a test project, not as validated engineering software: verify the results before relying on them for real-world radio planning.
 >
-> What has been checked: the ITM port reproduces the 5 official NTIA test cases, and the full test suite passes. A headless-browser end-to-end test of the web UI ran with no JavaScript errors. What has **not** been checked yet: it has never run against real Copernicus tiles (the tests use synthetic tiles in the exact GLO-90 format), and the Docker image has never been built (the CI smoke test will be its first build).
+> What has been checked:
+> - the ITM port reproduces the 5 official NTIA test cases, and the full test suite passes;
+> - it runs on real Copernicus GLO-90 tiles (French Alps, 100 km coverage maps and point-to-point links);
+> - its results were compared with [Signal-Server](https://github.com/loorisr/Signal-Server) on the same tiles. On a 100 km map at 145 MHz the median difference is −0.3 dB, but only about 65 % of pixels are within 3 dB. With the same NTIA ITM v1.3 in both tools, the gap comes from how each one reads the DEM (bilinear here, nearest pixel in Signal-Server), not from the model; see [How the terrain profile is built](#how-the-terrain-profile-is-built-interpolation);
+> - the Docker image (amd64) was built and run locally: health check, web UI, point-to-point and coverage requests all work;
+> - the web UI ran in a headless browser with no JavaScript errors.
+>
+> What has **not** been checked: results against field measurements, and the arm64 image, which is only built by the release workflow.
 
 A Rust HTTP API for radio propagation calculations, using the **ITM (Longley-Rice)** model and the **Copernicus GLO-90** digital elevation model (DEM).
 
@@ -208,5 +215,6 @@ cargo run --release -p itm --example bench   # cost of one ITM call
 
 ## Licences
 
+- The code in this repository is licensed under the **GNU Affero General Public License v3.0** (AGPL-3.0, see [LICENSE](LICENSE)). If you run a modified version as a network service, you must offer its source code to its users.
 - `crates/itm` is derived from the NTIA/ITS ITM software (https://github.com/NTIA/itm), a work of the US government that is not subject to copyright in the United States. The C++ → Rust port was done in 2026.
 - Copernicus DEM GLO-90 data is free to reuse. Its licence requires crediting the source (DLR / Airbus / the EU and ESA Copernicus programme) in derived products.

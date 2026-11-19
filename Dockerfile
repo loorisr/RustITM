@@ -15,7 +15,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM scratch
 LABEL org.opencontainers.image.title="itm-api" \
       org.opencontainers.image.description="ITM (Longley-Rice) radio propagation API + web UI, Copernicus GLO-90 DEM" \
-      org.opencontainers.image.licenses="MIT OR Apache-2.0"
+      org.opencontainers.image.licenses="AGPL-3.0-only"
 COPY --from=build /itm-server /itm-server
 COPY --from=build --chown=10001:10001 /data /data
 USER 10001:10001
