@@ -492,12 +492,15 @@
     const g = site && !err ? gridGeometry(site.lat, R, ds) : null;
     if (!err && Math.max(g.w, g.h) > lim.max_grid_side) err = `Grille trop grande (${g.w} × ${g.h} px, max ${lim.max_grid_side}). Réduisez le rayon ou choisissez un aperçu.`;
     if (err) { el.textContent = err; el.style.color = 'var(--danger)'; btn.disabled = true; return; }
-    const calls = g.radials * (g.steps - 1);
+    // Bilinéaire : ITM à tous les pas de chaque radiale. Par pixel : au plus un appel par
+    // pixel du disque (un peu moins en bordure, où les radiales sont plus serrées que les pixels).
+    const allSteps = g.radials * (g.steps - 1);
+    const calls = $('#cov-interp').value === 'bilinear' ? allSteps : Math.min(allSteps, Math.PI * R * R / (g.dx * g.dy));
     el.style.color = '';
     el.textContent = `Pixel ${fmt(g.dy, 0)} × ${fmt(g.dx, 0)} m · grille ${g.w} × ${g.h} px · ${g.radials} radiales · ~${calls >= 1e6 ? fmt(calls / 1e6, 1) + ' M' : fmt(calls / 1e3, 0) + ' k'} appels ITM`;
     btn.disabled = !!covAbort;
   }
-  ['#cov-radius', '#cov-ds', '#cov-site'].forEach(s => $(s).addEventListener('input', updateEstimate));
+  ['#cov-radius', '#cov-ds', '#cov-site', '#cov-interp'].forEach(s => $(s).addEventListener('input', updateEstimate));
 
   const mercY = lat => Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360));
   const invMercY = y => (2 * Math.atan(Math.exp(y)) - Math.PI / 2) * 180 / Math.PI;
@@ -541,7 +544,7 @@
     const output = $('#cov-output').value, q = QUANTITIES[output];
     const body = {
       ...radioParams(), tx: { lat: site.lat, lon: site.lon, height_m: site.height_m }, rx_height_m: num($('#cov-rx-h')),
-      radius_km: num($('#cov-radius')), downsample: +$('#cov-ds').value, output, eirp_dbm: site.eirp_dbm, format: 'f32',
+      radius_km: num($('#cov-radius')), downsample: +$('#cov-ds').value, interp: $('#cov-interp').value, output, eirp_dbm: site.eirp_dbm, format: 'f32',
     };
     covAbort = new AbortController();
     const btn = $('#btn-coverage'), t0 = performance.now();

@@ -72,6 +72,12 @@
           <option value="4">Aperçu ×4 (12″)</option>
         </select>
       </div>
+      <div><label>Rendu</label>
+        <select id="cov-interp" title="Point le plus proche : un calcul ITM par pixel (rapide). Bilinéaire : ITM à tous les pas de chaque radiale puis interpolation (lissé, ~1,5× plus lent).">
+          <option value="nearest">Par pixel (rapide)</option>
+          <option value="bilinear">Bilinéaire (lissé)</option>
+        </select>
+      </div>
       <div><label>Hauteur RX (m)</label><input type="number" id="cov-rx-h" value="2" min="0.5" step="0.5"></div>
       <div><label>Grandeur</label>
         <select id="cov-output">

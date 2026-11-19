@@ -128,6 +128,7 @@ curl -X POST localhost:8080/v1/coverage -H 'content-type: application/json' -o c
 |---|---|---|
 | `radius_km` | *required* | ≤ `MAX_RADIUS_KM` |
 | `downsample` | `1` | 1 = native GLO-90 grid; 2, 4… (max 8) = one GLO-90 pixel out of N, for a quick preview |
+| `interp` | `nearest` | `nearest` = one ITM call per pixel, at the nearest (radial, step) point (fastest); `bilinear` = ITM at every step of every radial, then bilinear interpolation (smoother, ~1.7× more ITM calls) |
 | `rx_height_m` | `2` | |
 | `output` | `path_loss` | `path_loss` (dB), `rx_power` (dBm), `field_strength` (dBµV/m). The last two need `eirp_dbm` |
 | `format` | `png` | `png` (RGBA, transparent below `color_weak`), `geotiff` (float32, EPSG:4326, nodata −9999), `json`, `f32` (raw little-endian float32, rows north to south, NaN = no data; dimensions in the `x-width`/`x-height` headers) |
@@ -138,9 +139,14 @@ Response headers give `x-bounds` (`west,south,east,north`, ready for a Leaflet `
 
 **Grid.** The output grid is the GLO-90 grid: 3″ in latitude (≈ 93 m). In longitude the step is 3″ below 50° latitude, then 4.5″, 6″, 9″, 15″ and 30″ towards the poles, matching the Copernicus tiles. Coverage pixel centres coincide with DEM pixel centres (checked with GDAL). The radial step is 3″ (≈ 93 m).
 
-**Method.** There are about 2πR / (smallest pixel side) radials, capped at 7200. Each radial's terrain profile is extracted once, then ITM P2P is called at every step with the sub-profile `[0..k]`. The polar result is resampled onto the lat/lon grid by bilinear interpolation in (azimuth, distance). In tests, pixel values match a direct `/v1/p2p` call to the same point to within 0.1 dB.
+**Method.** There are about 2πR / (smallest pixel side) radials, capped at 7200. Each radial's terrain profile is extracted once, then ITM P2P is called with the sub-profile `[0..k]` for step `k`.
 
-**Measured performance** (2 cores, about 4 µs per ITM call): at 45° latitude on the native grid, a 25 km radius gives a 767 × 541 px grid and about 650,000 ITM calls, computed in 1.3 s. The work is parallelised per radial with rayon, so time scales roughly with the number of cores.
+- `interp: "nearest"` (default): each pixel takes the value of the nearest (radial, step) point, and ITM is only called at the points that at least one pixel uses. That is at most one ITM call per pixel, as in Signal-Server, where each pixel belongs to a single ray. Near the transmitter many radials cross the same pixel, so this skips most of the calls there.
+- `interp: "bilinear"`: ITM is called at every step of every radial, and the polar result is resampled onto the lat/lon grid by bilinear interpolation in (azimuth, distance).
+
+Compared with a direct `/v1/p2p` call to the pixel centre (400 random pixels, Alps, 100 km, 145 MHz), the mean absolute difference is 1.0 dB with `nearest` and 0.8 dB with `bilinear`; about 92–94 % of pixels are within 3 dB. The differences come from the profile: the coverage uses a radial that passes within half a pixel of the centre, not the exact path to it, and ITM is sensitive to that near shadow edges.
+
+**Measured performance** (20 threads, real GLO-90 tiles): at 45.5° N on the native grid, a 100 km radius gives a 3081 × 2161 px grid (5.2 M pixels in the disk). `nearest` makes 4.5 M ITM calls in 0.82 s; `bilinear` makes 7.8 M in 1.2 s. On one thread: 13.7 s and 20.3 s, about 3 µs per ITM call. The work is parallelised per radial with rayon, so time scales roughly with the number of cores.
 
 ### Elevation
 

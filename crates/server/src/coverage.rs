@@ -4,14 +4,18 @@
 //! puis ITM P2P est appelé pour chaque distance avec le sous-profil [0..k]. C'est la méthode
 //! de SPLAT!/Signal-Server : chaque pixel reçoit un vrai calcul point à point avec le terrain
 //! réel, et non le mode « zone » statistique d'ITM.
-//! Les résultats polaires sont ensuite rééchantillonnés sur une grille lat/lon (EPSG:4326)
-//! par interpolation bilinéaire en (azimut, distance).
+//! Les résultats polaires sont ensuite reportés sur une grille lat/lon (EPSG:4326) :
+//! - `Interp::Nearest` (défaut) : chaque pixel prend le point (radiale, pas) le plus proche,
+//!   et ITM n'est appelé qu'aux points utilisés par au moins un pixel (un appel par pixel
+//!   au plus) ;
+//! - `Interp::Bilinear` : ITM à tous les pas, puis interpolation bilinéaire en
+//!   (azimut, distance).
 
 use std::f64::consts::TAU;
 use std::time::Instant;
 
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::dem::TileSet;
 use crate::geo::{bearing, distance, radial_profile, LatLon, EARTH_R};
@@ -23,6 +27,18 @@ pub struct CoverageSpec {
     pub downsample: u32,
     pub params: itm::P2pParams,
     pub max_radials: usize,
+    pub interp: Interp,
+}
+
+/// Report des résultats polaires sur la grille.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Interp {
+    /// Point polaire le plus proche ; ITM seulement aux points utilisés (le plus rapide)
+    #[default]
+    Nearest,
+    /// Interpolation bilinéaire en (azimut, distance) ; ITM à tous les pas
+    Bilinear,
 }
 
 /// 3 secondes d'arc en mètres (pas en latitude de GLO-90).
@@ -126,6 +142,7 @@ pub struct CoverageStats {
     pub steps_per_radial: usize,
     pub step_m: f64,
     pub pixel_arcsec: [f64; 2],
+    pub interp: Interp,
     pub itm_calls: u64,
     pub itm_errors: u64,
     pub width: usize,
@@ -133,13 +150,156 @@ pub struct CoverageStats {
     pub elapsed_ms: u128,
 }
 
+/// Position polaire fractionnaire (indice de radiale, indice de pas) d'un point, ou `None`
+/// au-delà du rayon.
+fn polar_pos(
+    tx: LatLon,
+    p: LatLon,
+    radius_m: f64,
+    step: f64,
+    n_steps: usize,
+    n_rad: usize,
+) -> Option<(f64, f64)> {
+    let d = distance(tx, p);
+    if d > radius_m {
+        return None;
+    }
+    let fk = (d / step).min(n_steps as f64);
+    let fj = if d < 1e-6 {
+        0.0
+    } else {
+        bearing(tx, p) / TAU * n_rad as f64
+    };
+    Some((fj, fk))
+}
+
 /// Calcule l'affaiblissement de base (dB) sur la grille.
 pub fn compute(tiles: &TileSet, spec: &CoverageSpec) -> (Grid, CoverageStats) {
     let t0 = Instant::now();
     let g = grid_geometry(spec.tx, spec.radius_m, spec.downsample, spec.max_radials);
-    let step = g.step_m;
-    let n_steps = (spec.radius_m / step).ceil() as usize;
-    let n_rad = g.n_radials;
+    // Au moins 2 pas : ITM n'est appelé qu'à partir du pas 2.
+    let n_steps = ((spec.radius_m / g.step_m).ceil() as usize).max(2);
+    let (data, itm_calls, itm_errors) = match spec.interp {
+        Interp::Nearest => compute_nearest(tiles, spec, &g, n_steps),
+        Interp::Bilinear => compute_bilinear(tiles, spec, &g, n_steps),
+    };
+    let stats = CoverageStats {
+        radials: g.n_radials,
+        steps_per_radial: n_steps,
+        step_m: g.step_m,
+        pixel_arcsec: [g.dlat * 3600.0, g.dlon * 3600.0],
+        interp: spec.interp,
+        itm_calls,
+        itm_errors,
+        width: g.width,
+        height: g.height,
+        elapsed_ms: t0.elapsed().as_millis(),
+    };
+    (
+        Grid {
+            width: g.width,
+            height: g.height,
+            west: g.west,
+            north: g.north,
+            dlon: g.dlon,
+            dlat: g.dlat,
+            data,
+        },
+        stats,
+    )
+}
+
+/// Un appel ITM par pixel : chaque pixel prend la valeur du point (radiale, pas) le plus
+/// proche, et ITM n'est calculé qu'aux points ainsi utilisés (comme Signal-Server, où chaque
+/// pixel appartient à un seul rayon). Près de l'émetteur, où de nombreuses radiales passent
+/// dans le même pixel, cela évite la plupart des appels.
+fn compute_nearest(
+    tiles: &TileSet,
+    spec: &CoverageSpec,
+    g: &GridGeom,
+    n_steps: usize,
+) -> (Vec<f32>, u64, u64) {
+    let (w, h) = (g.width, g.height);
+    let (step, n_rad) = (g.step_m, g.n_radials);
+    let nk = n_steps + 1;
+    const OUTSIDE: u32 = u32::MAX;
+    assert!(n_rad * nk < OUTSIDE as usize);
+
+    // 1) Point polaire (j·nk + k) associé à chaque pixel.
+    let mut keys = vec![OUTSIDE; w * h];
+    keys.par_chunks_mut(w).enumerate().for_each(|(r, row)| {
+        let lat = g.north - (r as f64 + 0.5) * g.dlat;
+        for (c, key) in row.iter_mut().enumerate() {
+            let p = LatLon {
+                lat,
+                lon: g.west + (c as f64 + 0.5) * g.dlon,
+            };
+            if let Some((fj, fk)) = polar_pos(spec.tx, p, spec.radius_m, step, n_steps, n_rad) {
+                let j = (fj.round() as usize) % n_rad;
+                // Les deux premiers pas (< 2 pas de l'émetteur) reprennent la valeur du pas 2.
+                let k = (fk.round() as usize).clamp(2, n_steps);
+                *key = (j * nk + k) as u32;
+            }
+        }
+    });
+
+    // 2) Points polaires réellement utilisés.
+    let mut needed = vec![false; n_rad * nk];
+    for &key in &keys {
+        if key != OUTSIDE {
+            needed[key as usize] = true;
+        }
+    }
+
+    // 3) ITM uniquement aux points utilisés ; profil extrait jusqu'au dernier d'entre eux.
+    let radials: Vec<(Vec<f32>, u64, u64)> = (0..n_rad)
+        .into_par_iter()
+        .map(|j| {
+            let need = &needed[j * nk..(j + 1) * nk];
+            let Some(k_max) = need.iter().rposition(|&b| b) else {
+                return (Vec::new(), 0, 0);
+            };
+            let brg = TAU * j as f64 / n_rad as f64;
+            let elev = radial_profile(tiles, spec.tx, brg, step, k_max);
+            let mut out = vec![f32::NAN; k_max + 1];
+            let (mut calls, mut errors) = (0u64, 0u64);
+            for k in 2..=k_max {
+                if need[k] {
+                    calls += 1;
+                    match itm::p2p(&spec.params, &elev[..=k], step) {
+                        Ok(r) => out[k] = r.loss_db as f32,
+                        Err(_) => errors += 1,
+                    }
+                }
+            }
+            (out, calls, errors)
+        })
+        .collect();
+    let itm_calls = radials.iter().map(|r| r.1).sum();
+    let itm_errors = radials.iter().map(|r| r.2).sum();
+
+    // 4) Lecture directe de la valeur polaire de chaque pixel.
+    let mut data = vec![f32::NAN; w * h];
+    data.par_iter_mut()
+        .zip(keys.par_iter())
+        .for_each(|(cell, &key)| {
+            if key != OUTSIDE {
+                let (j, k) = (key as usize / nk, key as usize % nk);
+                *cell = radials[j].0[k];
+            }
+        });
+    (data, itm_calls, itm_errors)
+}
+
+/// Ancienne méthode : ITM à chaque pas de chaque radiale, puis interpolation bilinéaire en
+/// (azimut, distance). Rendu plus lisse, mais environ 1,5 fois plus d'appels ITM.
+fn compute_bilinear(
+    tiles: &TileSet,
+    spec: &CoverageSpec,
+    g: &GridGeom,
+    n_steps: usize,
+) -> (Vec<f32>, u64, u64) {
+    let (step, n_rad) = (g.step_m, g.n_radials);
 
     // 1) Calcul polaire : une radiale par tâche rayon.
     let radials: Vec<(Vec<f32>, u64)> = (0..n_rad)
@@ -165,29 +325,21 @@ pub fn compute(tiles: &TileSet, spec: &CoverageSpec) -> (Grid, CoverageStats) {
     let polar: Vec<Vec<f32>> = radials.into_iter().map(|r| r.0).collect();
 
     // 2) Rééchantillonnage sur grille lat/lon.
-    let (w, h) = (g.width, g.height);
-    let (north, west, dlat, dlon) = (g.north, g.west, g.dlat, g.dlon);
-    let mut data = vec![f32::NAN; w * h];
+    let w = g.width;
+    let mut data = vec![f32::NAN; w * g.height];
     data.par_chunks_mut(w).enumerate().for_each(|(r, row)| {
-        let lat = north - (r as f64 + 0.5) * dlat;
+        let lat = g.north - (r as f64 + 0.5) * g.dlat;
         for (c, cell) in row.iter_mut().enumerate() {
             let p = LatLon {
                 lat,
-                lon: west + (c as f64 + 0.5) * dlon,
+                lon: g.west + (c as f64 + 0.5) * g.dlon,
             };
-            let d = distance(spec.tx, p);
-            if d > spec.radius_m {
+            let Some((fj, fk)) = polar_pos(spec.tx, p, spec.radius_m, step, n_steps, n_rad) else {
                 continue;
-            }
-            let fk = (d / step).min(n_steps as f64);
+            };
             let k0 = (fk.floor() as usize).min(n_steps);
             let k1 = (k0 + 1).min(n_steps);
             let wk = fk - k0 as f64;
-            let fj = if d < 1e-6 {
-                0.0
-            } else {
-                bearing(spec.tx, p) / TAU * n_rad as f64
-            };
             let j0 = (fj.floor() as usize) % n_rad;
             let j1 = (j0 + 1) % n_rad;
             let wj = fj - fj.floor();
@@ -211,30 +363,8 @@ pub fn compute(tiles: &TileSet, spec: &CoverageSpec) -> (Grid, CoverageStats) {
             }
         }
     });
-
-    let stats = CoverageStats {
-        radials: n_rad,
-        steps_per_radial: n_steps,
-        step_m: step,
-        pixel_arcsec: [dlat * 3600.0, dlon * 3600.0],
-        itm_calls: (n_rad * n_steps.saturating_sub(1)) as u64,
-        itm_errors,
-        width: w,
-        height: h,
-        elapsed_ms: t0.elapsed().as_millis(),
-    };
-    (
-        Grid {
-            width: w,
-            height: h,
-            west,
-            north,
-            dlon,
-            dlat,
-            data,
-        },
-        stats,
-    )
+    let itm_calls = (n_rad * (n_steps - 1)) as u64;
+    (data, itm_calls, itm_errors)
 }
 
 /// Point utile aux tests : position d'un pixel.

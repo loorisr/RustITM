@@ -457,6 +457,9 @@ struct CoverageRequest {
     /// 1 = grille native GLO-90 (défaut) ; N = un pixel GLO-90 sur N (aperçu)
     #[serde(default = "d_ds")]
     downsample: u32,
+    /// `nearest` (défaut, un appel ITM par pixel) ou `bilinear` (ancien rendu lissé)
+    #[serde(default)]
+    interp: coverage::Interp,
     #[serde(flatten)]
     itm: ItmInput,
     #[serde(flatten)]
@@ -523,6 +526,7 @@ async fn coverage_handler(
             downsample: req.downsample,
             params,
             max_radials: lim.max_radials,
+            interp: req.interp,
         };
         Ok(coverage::compute(&ts, &spec))
     })
