@@ -169,18 +169,29 @@ pub fn find_horizons(z: &[f64], xi: f64, a_e: f64, h: [f64; 2]) -> ([f64; 2], [f
     let mut d_hzn = [d, d];
     let mut d_tx = 0.0;
     let mut d_rx = d;
+    // Test sans division : t > θ  ⇔  (zi - z0) - d·(θ + d/2a) > 0 (d > 0). Un point n'est
+    // candidat que si ce reste dépasse -TOL ; l'angle est alors recalculé avec l'expression
+    // de la référence, qui seule décide. TOL (1 µm) couvre largement les erreurs d'arrondi
+    // de la forme multipliée (~1e-12 m), donc le résultat est identique au bit près à la
+    // boucle d'origine (2 divisions par point) tout en ne divisant que sur les candidats.
+    const TOL: f64 = 1e-6;
+    let inv_2a = 0.5 / a_e;
     for &zi in &z[1..np] {
         d_tx += xi;
         d_rx -= xi;
-        let t_tx = (zi - z_tx) / d_tx - d_tx / (2.0 * a_e);
-        let t_rx = -(z_rx - zi) / d_rx - d_rx / (2.0 * a_e);
-        if t_tx > theta[0] {
-            theta[0] = t_tx;
-            d_hzn[0] = d_tx;
+        if (zi - z_tx) - d_tx * (theta[0] + d_tx * inv_2a) > -TOL {
+            let t_tx = (zi - z_tx) / d_tx - d_tx / (2.0 * a_e);
+            if t_tx > theta[0] {
+                theta[0] = t_tx;
+                d_hzn[0] = d_tx;
+            }
         }
-        if t_rx > theta[1] {
-            theta[1] = t_rx;
-            d_hzn[1] = d_rx;
+        if (zi - z_rx) - d_rx * (theta[1] + d_rx * inv_2a) > -TOL {
+            let t_rx = -(z_rx - zi) / d_rx - d_rx / (2.0 * a_e);
+            if t_rx > theta[1] {
+                theta[1] = t_rx;
+                d_hzn[1] = d_rx;
+            }
         }
     }
     (theta, d_hzn)
@@ -632,4 +643,86 @@ pub fn longley_rice(
         }
     }
     Ok((a_ref.max(0.0), mode))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Boucle d'origine (référence NTIA) : 2 divisions par point.
+    fn find_horizons_ref(z: &[f64], xi: f64, a_e: f64, h: [f64; 2]) -> ([f64; 2], [f64; 2]) {
+        let np = z.len() - 1;
+        let d = np as f64 * xi;
+        let z_tx = z[0] + h[0];
+        let z_rx = z[np] + h[1];
+        let mut theta = [
+            (z_rx - z_tx) / d - d / (2.0 * a_e),
+            -(z_rx - z_tx) / d - d / (2.0 * a_e),
+        ];
+        let mut d_hzn = [d, d];
+        let mut d_tx = 0.0;
+        let mut d_rx = d;
+        for &zi in &z[1..np] {
+            d_tx += xi;
+            d_rx -= xi;
+            let t_tx = (zi - z_tx) / d_tx - d_tx / (2.0 * a_e);
+            let t_rx = -(z_rx - zi) / d_rx - d_rx / (2.0 * a_e);
+            if t_tx > theta[0] {
+                theta[0] = t_tx;
+                d_hzn[0] = d_tx;
+            }
+            if t_rx > theta[1] {
+                theta[1] = t_rx;
+                d_hzn[1] = d_rx;
+            }
+        }
+        (theta, d_hzn)
+    }
+
+    /// Générateur pseudo-aléatoire déterministe (xorshift64*).
+    fn rng(state: &mut u64) -> f64 {
+        *state ^= *state >> 12;
+        *state ^= *state << 25;
+        *state ^= *state >> 27;
+        (state.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    #[test]
+    fn find_horizons_matches_reference_bit_for_bit() {
+        let a_e = 1.0 / (157e-9 * (1.0 - 0.04665 * (301.0f64 / 179.3).exp()));
+        let mut s = 0x9e37_79b9_7f4a_7c15u64;
+        let n = 1200;
+        let profiles: Vec<Vec<f64>> = vec![
+            // relief montagneux
+            (0..=n)
+                .map(|i| {
+                    let x = i as f64;
+                    800.0 + 600.0 * (x * 0.013).sin() + 80.0 * (x * 0.31).cos()
+                })
+                .collect(),
+            // terrain plat, cas d'égalités
+            vec![100.0; n + 1],
+            // marches entières (nombreuses égalités exactes)
+            (0..=n).map(|i| ((i / 37) % 5) as f64 * 50.0).collect(),
+            // bruit aléatoire
+            (0..=n).map(|_| 2000.0 * rng(&mut s)).collect(),
+        ];
+        for z in &profiles {
+            for xi in [30.0, 92.662_566_861_277_44, 250.0] {
+                for h in [[30.0, 2.0], [1.0, 1.0], [500.0, 10.0]] {
+                    for k in 2..=n {
+                        let got = find_horizons(&z[..=k], xi, a_e, h);
+                        let want = find_horizons_ref(&z[..=k], xi, a_e, h);
+                        assert!(
+                            got.0[0].to_bits() == want.0[0].to_bits()
+                                && got.0[1].to_bits() == want.0[1].to_bits()
+                                && got.1[0].to_bits() == want.1[0].to_bits()
+                                && got.1[1].to_bits() == want.1[1].to_bits(),
+                            "k={k} xi={xi} h={h:?}: {got:?} != {want:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

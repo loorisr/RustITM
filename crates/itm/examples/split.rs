@@ -40,12 +40,22 @@ fn main() {
     });
     println!("p2p complet       {t:.3} µs/appel (checksum {acc:.6})");
     let t = per_call(n, reps, |k| {
-        black_box(itm::core::find_horizons(black_box(&elev[..=k]), xi, 1.0 / gamma_e, h));
+        black_box(itm::core::find_horizons(
+            black_box(&elev[..=k]),
+            xi,
+            1.0 / gamma_e,
+            h,
+        ));
     });
     println!("find_horizons     {t:.3} µs");
     let t = per_call(n, reps, |k| {
         let d = k as f64 * xi;
-        black_box(itm::core::compute_delta_h(black_box(&elev[..=k]), xi, 450.0, d - 30.0));
+        black_box(itm::core::compute_delta_h(
+            black_box(&elev[..=k]),
+            xi,
+            450.0,
+            d - 30.0,
+        ));
     });
     println!("compute_delta_h   {t:.3} µs");
     let t = per_call(n, reps, |k| {
