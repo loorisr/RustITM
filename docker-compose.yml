@@ -1,0 +1,24 @@
+# docker compose up -d           -> builds locally (or set ITM_IMAGE to use the published image)
+# ITM_IMAGE=ghcr.io/<owner>/itm-api:latest docker compose up -d
+# Pre-download tiles for offline use:
+#   docker compose run --rm itm-api prefetch --bbox 44,5,46.5,7.5
+services:
+  itm-api:
+    image: ${ITM_IMAGE:-itm-api:local}
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      DEM_DOWNLOAD: "true"
+      DEM_MEM_TILES: "64"
+      MAX_RADIUS_KM: "150"
+      COVERAGE_CONCURRENCY: "2"
+      RUST_LOG: info
+      # DEM_LOCAL_DIR: /dem          # read-only folder of GLO-90 tiles (see volume below)
+    volumes:
+      - dem-cache:/data/dem-cache
+      # - ./glo90:/dem:ro
+    restart: unless-stopped
+
+volumes:
+  dem-cache:
