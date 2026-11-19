@@ -12,11 +12,13 @@ mod complex;
 /// Pas une API stable.
 #[doc(hidden)]
 pub mod core;
+mod fast;
 mod variability;
 
 use complex::Complex;
 
 pub use crate::core::{DeltaHHint, PathGeometry, PropMode};
+pub use crate::fast::{FastRadial, FAST_DEFAULT_STRIDE};
 
 /// Climat radio (TN101).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -364,23 +366,48 @@ fn p2p_impl(
     let p10 = (0.1 * np as f64) as usize;
     let h_sys = elevations[p10..=(np - p10)].iter().sum::<f64>() / (np - 2 * p10 + 1) as f64;
 
-    // InitializePointToPoint
-    let gamma_a = 157e-9;
-    let n_s = if h_sys == 0.0 {
-        p.n0
-    } else {
-        p.n0 * (-h_sys / 9460.0).exp()
-    };
-    let gamma_e = gamma_a * (1.0 - 0.04665 * (n_s / 179.3).exp());
-    let ep_r = Complex::new(p.epsilon, 18000.0 * p.sigma / p.f_mhz);
-    let mut z_g = (ep_r - 1.0).sqrt();
-    if p.polarization == Polarization::Vertical {
-        z_g = z_g / ep_r;
-    }
-
+    let (gamma_e, n_s) = refractivity(p.n0, h_sys);
+    let z_g = ground_impedance(p);
     let h = [p.h_tx_m, p.h_rx_m];
     let qp = core::quick_pfl_hinted(elevations, spacing_m, gamma_e, h, hint);
+    finish(p, w, z_g, gamma_e, n_s, &qp, spacing_m)
+}
 
+/// Gradient de courbure effectif γe et réfractivité de surface Ns (`InitializePointToPoint`).
+#[inline]
+pub(crate) fn refractivity(n0: f64, h_sys: f64) -> (f64, f64) {
+    let gamma_a = 157e-9;
+    let n_s = if h_sys == 0.0 {
+        n0
+    } else {
+        n0 * (-h_sys / 9460.0).exp()
+    };
+    (gamma_a * (1.0 - 0.04665 * (n_s / 179.3).exp()), n_s)
+}
+
+/// Impédance de surface du sol (`InitializePointToPoint`).
+pub(crate) fn ground_impedance(p: &P2pParams) -> Complex {
+    let ep_r = Complex::new(p.epsilon, 18000.0 * p.sigma / p.f_mhz);
+    let z_g = (ep_r - 1.0).sqrt();
+    if p.polarization == Polarization::Vertical {
+        z_g / ep_r
+    } else {
+        z_g
+    }
+}
+
+/// Affaiblissement de référence, variabilité et résultat, une fois le profil analysé.
+#[inline]
+pub(crate) fn finish(
+    p: &P2pParams,
+    mut w: Warnings,
+    z_g: Complex,
+    gamma_e: f64,
+    n_s: f64,
+    qp: &core::QuickPflOut,
+    spacing_m: f64,
+) -> Result<P2pResult, ItmError> {
+    let h = [p.h_tx_m, p.h_rx_m];
     let (a_ref, mode) = core::longley_rice(
         qp.theta_hzn,
         p.f_mhz,

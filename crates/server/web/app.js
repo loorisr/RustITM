@@ -544,7 +544,7 @@
     const output = $('#cov-output').value, q = QUANTITIES[output];
     const body = {
       ...radioParams(), tx: { lat: site.lat, lon: site.lon, height_m: site.height_m }, rx_height_m: num($('#cov-rx-h')),
-      radius_km: num($('#cov-radius')), downsample: +$('#cov-ds').value, interp: $('#cov-interp').value, output, eirp_dbm: site.eirp_dbm, format: 'f32',
+      radius_km: num($('#cov-radius')), downsample: +$('#cov-ds').value, interp: $('#cov-interp').value, fast: +$('#cov-fast').value, output, eirp_dbm: site.eirp_dbm, format: 'f32',
     };
     covAbort = new AbortController();
     const btn = $('#btn-coverage'), t0 = performance.now();

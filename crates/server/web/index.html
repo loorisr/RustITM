@@ -78,6 +78,13 @@
           <option value="bilinear">Bilinéaire (lissé)</option>
         </select>
       </div>
+      <div><label>Calcul ITM</label>
+        <select id="cov-fast" title="Exact : calcul de référence à chaque pixel. Quasi exact : horizons accélérés, même résultat (~1,4× plus rapide). Rapide : Δh recalculé tous les 50 pas et interpolé entre deux (~2,6× plus rapide, 99,7 % des pixels à 3 dB près).">
+          <option value="0">Exact</option>
+          <option value="1">Quasi exact (×1,4)</option>
+          <option value="50">Rapide, approché (×2,6)</option>
+        </select>
+      </div>
       <div><label>Hauteur RX (m)</label><input type="number" id="cov-rx-h" value="2" min="0.5" step="0.5"></div>
       <div><label>Grandeur</label>
         <select id="cov-output">

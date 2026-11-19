@@ -61,7 +61,7 @@ impl PathGeometry {
 }
 
 #[inline]
-fn fdim(x: f64, y: f64) -> f64 {
+pub(crate) fn fdim(x: f64, y: f64) -> f64 {
     if x > y {
         x - y
     } else {
@@ -312,17 +312,45 @@ pub fn quick_pfl_hinted(
     let np = z.len() - 1;
     let d = np as f64 * xi;
     let a_e = 1.0 / gamma_e;
-    let (mut theta, mut d_hzn) = find_horizons(z, xi, a_e, h);
-    let terrain_d_hzn_m = d_hzn;
+    let (theta, d_hzn) = find_horizons(z, xi, a_e, h);
     let d_start = (15.0 * h[0]).min(0.1 * d_hzn[0]);
     let d_end = d - (15.0 * h[1]).min(0.1 * d_hzn[1]);
     let delta_h = compute_delta_h_hinted(z, xi, d_start, d_end, hint);
+    quick_pfl_finish(
+        [z[0], z[np]],
+        d,
+        a_e,
+        h,
+        (theta, d_hzn),
+        delta_h,
+        (d_start, d_end),
+        |a, b| linear_least_squares_fit(z, xi, a, b),
+    )
+}
+
+/// Fin de `QuickPfl`, une fois les horizons et Δh connus : hauteurs effectives et, en vue
+/// directe, horizons terre lisse. `lls(d_start, d_end)` est la régression linéaire du profil
+/// (directe, ou par sommes préfixées en mode rapide).
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub(crate) fn quick_pfl_finish<F: Fn(f64, f64) -> (f64, f64)>(
+    z_ends: [f64; 2],
+    d: f64,
+    a_e: f64,
+    h: [f64; 2],
+    horizons: ([f64; 2], [f64; 2]),
+    delta_h: f64,
+    (d_start, d_end): (f64, f64),
+    lls: F,
+) -> QuickPflOut {
+    let (mut theta, mut d_hzn) = horizons;
+    let terrain_d_hzn_m = d_hzn;
     let mut h_e = [0.0; 2];
 
     if d_hzn[0] + d_hzn[1] > 1.5 * d {
-        let (fit_tx, fit_rx) = linear_least_squares_fit(z, xi, d_start, d_end);
-        h_e[0] = h[0] + fdim(z[0], fit_tx);
-        h_e[1] = h[1] + fdim(z[np], fit_rx);
+        let (fit_tx, fit_rx) = lls(d_start, d_end);
+        h_e[0] = h[0] + fdim(z_ends[0], fit_tx);
+        h_e[1] = h[1] + fdim(z_ends[1], fit_rx);
         let hzn =
             |he: f64| (2.0 * he * a_e).sqrt() * (-0.07 * (delta_h / he.max(5.0)).sqrt()).exp();
         for i in 0..2 {
@@ -341,10 +369,10 @@ pub fn quick_pfl_hinted(
             theta[i] = (0.65 * delta_h * (q / d_hzn[i] - 1.0) - 2.0 * h_e[i]) / q;
         }
     } else {
-        let (fit_tx, _) = linear_least_squares_fit(z, xi, d_start, 0.9 * d_hzn[0]);
-        h_e[0] = h[0] + fdim(z[0], fit_tx);
-        let (_, fit_rx) = linear_least_squares_fit(z, xi, d - 0.9 * d_hzn[1], d_end);
-        h_e[1] = h[1] + fdim(z[np], fit_rx);
+        let (fit_tx, _) = lls(d_start, 0.9 * d_hzn[0]);
+        h_e[0] = h[0] + fdim(z_ends[0], fit_tx);
+        let (_, fit_rx) = lls(d - 0.9 * d_hzn[1], d_end);
+        h_e[1] = h[1] + fdim(z_ends[1], fit_rx);
     }
 
     QuickPflOut {

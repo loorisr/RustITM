@@ -140,6 +140,7 @@ curl -X POST localhost:8080/v1/coverage -H 'content-type: application/json' -o c
 | `radius_km` | *required* | ≤ `MAX_RADIUS_KM` |
 | `downsample` | `1` | 1 = native GLO-90 grid; 2, 4… (max 8) = one GLO-90 pixel out of N, for a quick preview |
 | `interp` | `nearest` | `nearest` = one ITM call per pixel, at the nearest (radial, step) point (fastest); `bilinear` = ITM at every step of every radial, then bilinear interpolation (smoother, ~1.7× more ITM calls) |
+| `fast` | off | ITM fast mode, approximate (like Signal-Server's `-fast N`): `false`/`0` = exact; `1` = fast horizons only (same result as exact on the test maps, ~1.4× faster); `N` ≥ 2 = Δh recomputed every N steps and interpolated in between; `true` = `50`, as in Signal-Server (~2.6–2.9× faster, 99.7 % of pixels within 3 dB). See [docs/FAST_MODE.md](docs/FAST_MODE.md) |
 | `rx_height_m` | `2` | |
 | `output` | `path_loss` | `path_loss` (dB), `rx_power` (dBm), `field_strength` (dBµV/m). The last two need `eirp_dbm` |
 | `format` | `png` | `png` (RGBA, transparent below `color_weak`), `geotiff` (float32, EPSG:4326, nodata −9999), `json`, `f32` (raw little-endian float32, rows north to south, NaN = no data; dimensions in the `x-width`/`x-height` headers) |
@@ -159,6 +160,8 @@ Compared with a direct `/v1/p2p` call to the pixel centre (400 random pixels, Al
 
 **Measured performance** (20 threads, real GLO-90 tiles): at 45.5° N on the native grid, a 100 km radius gives a 3081 × 2161 px grid (5.2 M pixels in the disk). `nearest` makes 4.5 M ITM calls in 0.75 s; `bilinear` makes 7.8 M in 1.07 s (Intel Core Ultra 7 265K, 8 P + 12 E cores). On one thread: 12.2 s and 17.8 s, about 2.3–2.7 µs per ITM call. Along each radial, the terrain irregularity Δh is computed with a hint carried from one distance to the next (the 10 % / 90 % quantiles move little between neighbouring points); results are bit-identical to the reference algorithm. The work is parallelised per radial with rayon, so time scales roughly with the number of cores.
 
+With `fast: true` (N = 50) the same `nearest` map takes 0.31 s on 20 threads and 4.3 s on one thread (2.85× faster than exact), with 99.72 % of pixels within 3 dB of the exact result.
+
 ### Elevation
 
 - `GET /v1/elevation?lat=45.2&lon=5.75`
@@ -174,7 +177,7 @@ The UI is served at `/`. It is plain JavaScript with no build step, and Leaflet 
 
 - **Sites**: add by clicking on the map, move by drag-and-drop. Each site has a name, height, EIRP and colour. Sites are saved in the browser, with JSON import/export.
 - **Link**: a transmitter to a point on the map or to another site; shortcut: <kbd>Shift</kbd> + click. Results show received power, field strength, losses, path geometry, ITM mode and warnings. A **terrain profile** shows the curved earth (k = 4/3), the line of sight, the first Fresnel zone, and obstacles that intrude into 60% of F1. Hovering over the profile moves a cursor along the path on the map.
-- **Coverage**: native grid or ×2/×4 preview, with a cost estimate before you run it. Layers can be stacked. Each layer has its own opacity and colour range (changed without recalculating, since colouring happens in the browser), and exports to GeoTIFF or PNG.
+- **Coverage**: native grid or ×2/×4 preview, exact, quasi-exact or fast ITM, with a cost estimate before you run it. Layers can be stacked. Each layer has its own opacity and colour range (changed without recalculating, since colouring happens in the browser), and exports to GeoTIFF or PNG.
 - **Radio**: band presets (PMR446, LoRa, marine VHF, GSM, Wi-Fi…), ground types, climate and advanced ITM parameters.
 - The status bar shows the cursor position, DEM elevation and the value of the coverage layer under the cursor.
 

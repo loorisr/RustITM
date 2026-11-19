@@ -460,6 +460,10 @@ struct CoverageRequest {
     /// `nearest` (défaut, un appel ITM par pixel) ou `bilinear` (ancien rendu lissé)
     #[serde(default)]
     interp: coverage::Interp,
+    /// ITM rapide, approché : absent / `false` / 0 = exact (défaut) ; `true` = N=50 ;
+    /// entier N ≥ 1 = Δh recalculé tous les N pas (1 : quasi exact)
+    #[serde(default)]
+    fast: FastOpt,
     #[serde(flatten)]
     itm: ItmInput,
     #[serde(flatten)]
@@ -474,6 +478,26 @@ struct CoverageRequest {
     color_strong: Option<f32>,
     #[serde(default = "d_alpha")]
     png_alpha: u8,
+}
+
+/// Option `fast` : booléen ou pas N.
+#[derive(Deserialize, Default, Clone, Copy)]
+#[serde(untagged)]
+enum FastOpt {
+    #[default]
+    Off,
+    Flag(bool),
+    Stride(u32),
+}
+
+impl FastOpt {
+    fn stride(self) -> u32 {
+        match self {
+            FastOpt::Off | FastOpt::Flag(false) => 0,
+            FastOpt::Flag(true) => itm::FAST_DEFAULT_STRIDE,
+            FastOpt::Stride(n) => n,
+        }
+    }
 }
 
 async fn coverage_handler(
@@ -510,6 +534,12 @@ async fn coverage_handler(
         ));
     }
     let params = req.itm.to_params(req.tx.height_m, req.rx_height_m)?;
+    let fast = req.fast.stride();
+    if fast > 100_000 {
+        return Err(AppError::bad_request(
+            "fast doit être un booléen ou un entier entre 0 et 100000",
+        ));
+    }
 
     let _permit = st.coverage_slots.clone().try_acquire_owned().map_err(|_| {
         AppError::unavailable("trop de calculs de couverture en cours, réessayer plus tard")
@@ -527,6 +557,7 @@ async fn coverage_handler(
             params,
             max_radials: lim.max_radials,
             interp: req.interp,
+            fast,
         };
         Ok(coverage::compute(&ts, &spec))
     })

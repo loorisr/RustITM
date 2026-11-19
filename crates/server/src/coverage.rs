@@ -28,6 +28,50 @@ pub struct CoverageSpec {
     pub params: itm::P2pParams,
     pub max_radials: usize,
     pub interp: Interp,
+    /// Mode ITM rapide, approché (comme `-fast N` de Signal-Server) : 0 = exact (défaut) ;
+    /// N ≥ 1 = horizons accélérés et Δh recalculé tous les N pas, interpolé entre deux.
+    pub fast: u32,
+}
+
+/// Évaluation ITM le long d'une radiale, au pas k croissant : exacte ou rapide.
+enum RadialItm<'a> {
+    Exact {
+        params: &'a itm::P2pParams,
+        elev: &'a [f64],
+        step: f64,
+        hint: itm::DeltaHHint,
+    },
+    Fast(Box<itm::FastRadial<'a>>),
+}
+
+impl<'a> RadialItm<'a> {
+    fn new(spec: &'a CoverageSpec, elev: &'a [f64], step: f64) -> Self {
+        if spec.fast > 0 {
+            if let Ok(f) = itm::FastRadial::new(&spec.params, elev, step, spec.fast) {
+                return RadialItm::Fast(Box::new(f));
+            }
+        }
+        RadialItm::Exact {
+            params: &spec.params,
+            elev,
+            step,
+            hint: itm::DeltaHHint::default(),
+        }
+    }
+
+    #[inline]
+    fn loss(&mut self, k: usize) -> Option<f32> {
+        let r = match self {
+            RadialItm::Exact {
+                params,
+                elev,
+                step,
+                hint,
+            } => itm::p2p_hinted(params, &elev[..=k], *step, hint),
+            RadialItm::Fast(f) => f.loss(k),
+        };
+        r.ok().map(|r| r.loss_db as f32)
+    }
 }
 
 /// Report des résultats polaires sur la grille.
@@ -143,6 +187,8 @@ pub struct CoverageStats {
     pub step_m: f64,
     pub pixel_arcsec: [f64; 2],
     pub interp: Interp,
+    /// 0 = ITM exact ; N = mode rapide, Δh tous les N pas
+    pub fast: u32,
     pub itm_calls: u64,
     pub itm_errors: u64,
     pub width: usize,
@@ -189,6 +235,7 @@ pub fn compute(tiles: &TileSet, spec: &CoverageSpec) -> (Grid, CoverageStats) {
         step_m: g.step_m,
         pixel_arcsec: [g.dlat * 3600.0, g.dlon * 3600.0],
         interp: spec.interp,
+        fast: spec.fast,
         itm_calls,
         itm_errors,
         width: g.width,
@@ -263,13 +310,13 @@ fn compute_nearest(
             let elev = radial_profile(tiles, spec.tx, brg, step, k_max);
             let mut out = vec![f32::NAN; k_max + 1];
             let (mut calls, mut errors) = (0u64, 0u64);
-            let mut hint = itm::DeltaHHint::default();
+            let mut eval = RadialItm::new(spec, &elev, step);
             for k in 2..=k_max {
                 if need[k] {
                     calls += 1;
-                    match itm::p2p_hinted(&spec.params, &elev[..=k], step, &mut hint) {
-                        Ok(r) => out[k] = r.loss_db as f32,
-                        Err(_) => errors += 1,
+                    match eval.loss(k) {
+                        Some(v) => out[k] = v,
+                        None => errors += 1,
                     }
                 }
             }
@@ -310,11 +357,11 @@ fn compute_bilinear(
             let elev = radial_profile(tiles, spec.tx, brg, step, n_steps);
             let mut out = vec![f32::NAN; n_steps + 1];
             let mut errors = 0u64;
-            let mut hint = itm::DeltaHHint::default();
-            for k in 2..=n_steps {
-                match itm::p2p_hinted(&spec.params, &elev[..=k], step, &mut hint) {
-                    Ok(r) => out[k] = r.loss_db as f32,
-                    Err(_) => errors += 1,
+            let mut eval = RadialItm::new(spec, &elev, step);
+            for (k, v) in out.iter_mut().enumerate().skip(2) {
+                match eval.loss(k) {
+                    Some(l) => *v = l,
+                    None => errors += 1,
                 }
             }
             // Les deux premiers pas (< 2 pas de l'émetteur) reprennent la valeur du pas 2.

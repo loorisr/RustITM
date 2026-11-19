@@ -16,6 +16,10 @@ const TX: LatLon = LatLon {
 const RADIUS_M: f64 = 8_000.0;
 
 fn spec(interp: Interp) -> CoverageSpec {
+    spec_fast(interp, 0)
+}
+
+fn spec_fast(interp: Interp, fast: u32) -> CoverageSpec {
     CoverageSpec {
         tx: TX,
         radius_m: RADIUS_M,
@@ -28,11 +32,11 @@ fn spec(interp: Interp) -> CoverageSpec {
         },
         max_radials: 7200,
         interp,
+        fast,
     }
 }
 
-#[test]
-fn nearest_pixels_are_exact_p2p_and_cheaper_than_bilinear() {
+fn with_tiles<F: FnOnce(&itm_server::dem::TileSet)>(f: F) {
     let tiles_dir = tempfile::tempdir().unwrap();
     write_tile(tiles_dir.path(), 45, 5, 1200);
     let cache = tempfile::tempdir().unwrap();
@@ -45,10 +49,47 @@ fn nearest_pixels_are_exact_p2p_and_cheaper_than_bilinear() {
     .unwrap();
     let (s, w, n, e) = circle_bbox(TX, RADIUS_M);
     let ts = dem.tile_set(s, w, n, e, 4).unwrap();
+    f(&ts);
+}
 
+#[test]
+fn fast_mode_close_to_exact() {
+    with_tiles(|ts| {
+        for interp in [Interp::Nearest, Interp::Bilinear] {
+            let (exact, _) = compute(ts, &spec(interp));
+            for (n, min_1db, min_3db) in [(1, 0.9999, 1.0), (50, 0.95, 0.999)] {
+                let (fast, stats) = compute(ts, &spec_fast(interp, n));
+                assert_eq!(stats.fast, n);
+                assert_eq!(stats.itm_errors, 0);
+                let (mut tot, mut in1, mut in3) = (0usize, 0usize, 0usize);
+                for (a, b) in exact.data.iter().zip(&fast.data) {
+                    assert_eq!(a.is_finite(), b.is_finite());
+                    if a.is_finite() {
+                        let e = (a - b).abs();
+                        tot += 1;
+                        in1 += (e <= 1.0) as usize;
+                        in3 += (e <= 3.0) as usize;
+                    }
+                }
+                let (r1, r3) = (in1 as f64 / tot as f64, in3 as f64 / tot as f64);
+                assert!(
+                    r1 >= min_1db && r3 >= min_3db,
+                    "{interp:?} fast={n}: {r1} {r3}"
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn nearest_pixels_are_exact_p2p_and_cheaper_than_bilinear() {
+    with_tiles(nearest_checks);
+}
+
+fn nearest_checks(ts: &itm_server::dem::TileSet) {
     let sp = spec(Interp::Nearest);
-    let (grid, stats) = compute(&ts, &sp);
-    let (grid_b, stats_b) = compute(&ts, &spec(Interp::Bilinear));
+    let (grid, stats) = compute(ts, &sp);
+    let (grid_b, stats_b) = compute(ts, &spec(Interp::Bilinear));
 
     // Même emprise, mêmes pixels renseignés.
     assert_eq!((grid.width, grid.height), (grid_b.width, grid_b.height));
@@ -91,7 +132,7 @@ fn nearest_pixels_are_exact_p2p_and_cheaper_than_bilinear() {
             };
             let j = (fj.round() as usize) % n_rad;
             let k = ((d / step).min(n_steps as f64).round() as usize).clamp(2, n_steps);
-            let elev = radial_profile(&ts, TX, TAU * j as f64 / n_rad as f64, step, k);
+            let elev = radial_profile(ts, TX, TAU * j as f64 / n_rad as f64, step, k);
             let want = itm::p2p(&sp.params, &elev, step).unwrap().loss_db as f32;
             assert_eq!(
                 v.to_bits(),
