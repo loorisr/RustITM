@@ -439,9 +439,8 @@ fn troposcatter_loss(
     h0: &mut f64,
 ) -> f64 {
     let wn = f_mhz / 47.7;
-    let h_0;
-    if *h0 > 15.0 {
-        h_0 = *h0;
+    let h_0 = if *h0 > 15.0 {
+        *h0
     } else {
         let mut ad = d_hzn[0] - d_hzn[1];
         let mut rr = h_e[1] / h_e[0];
@@ -479,8 +478,8 @@ fn troposcatter_loss(
         if hh > 15.0 && *h0 >= 0.0 {
             hh = *h0;
         }
-        h_0 = hh;
-    }
+        hh
+    };
     *h0 = h_0;
     let th = d / a_e - theta_los;
     f_function(th * d) + 10.0 * (wn * 47.7 * th.powi(4)).log10()
@@ -573,13 +572,12 @@ pub fn longley_rice(
     if d < d_sml {
         let a_sml = d_sml * m_d + a_d0;
         let mut d0 = 0.04 * f_mhz * h_e[0] * h_e[1];
-        let d1;
-        if a_d0 >= 0.0 {
+        let d1 = if a_d0 >= 0.0 {
             d0 = d0.min(0.5 * d_ml);
-            d1 = d0 + 0.25 * (d_ml - d0);
+            d0 + 0.25 * (d_ml - d0)
         } else {
-            d1 = (-a_d0 / m_d).max(0.25 * d_ml);
-        }
+            (-a_d0 / m_d).max(0.25 * d_ml)
+        };
         let a1 = line_of_sight_loss(d1, h_e, z_g, delta_h, m_d, a_d0, d_sml, f_mhz);
         let mut flag = false;
         let mut k1 = 0.0;
