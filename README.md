@@ -15,6 +15,10 @@ A Rust HTTP API for radio propagation calculations, using the **ITM (Longley-Ric
 
 Note: the web UI, API error messages, log lines and code comments are in French.
 
+![Web UI: 100 km VHF coverage (145 MHz, 30 m mast) around 45.5° N 6° E, received power from −120 to −40 dBm, on an OpenStreetMap background](docs/screenshot.jpg)
+
+*Web UI: 100 km coverage of a 145 MHz transmitter (30 m mast, 52 dBm EIRP) in the French Alps, computed on the native GLO-90 grid (3081 × 2161 px, 4.5 M ITM calls). Map © OpenStreetMap contributors; DEM Copernicus GLO-90 © DLR / Airbus, ESA / EU.*
+
 ## Getting started
 
 ### Docker (recommended)
